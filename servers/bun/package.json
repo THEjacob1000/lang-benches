@@ -1,0 +1,12 @@
+{
+  "name": "go-bun-bench-servers",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "elysia": "2.0.0-beta.20"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

@@ -48,3 +48,10 @@ env*
 .idea/
 .idea/*
 .idea/**/*
+node_modules
+
+# Benchmark builds and raw runs
+bin/
+results/*/runs/
+tools/wrk*/
+servers/bun/node_modules/
