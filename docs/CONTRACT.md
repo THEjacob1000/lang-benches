@@ -9,7 +9,7 @@ Write it the way an experienced engineer would ship an optimised production serv
 
 ## Process
 - Env: `PORT` (default 3000), `DB_PATH` (required), `JWT_SECRET` (required), bind `127.0.0.1` only.
-- JS clusters: `WORKERS` (process count, default 1).
+- JS clusters: `WORKERS` (process count, default 1). Go: `GOMAXPROCS`. Rust: `TOKIO_WORKER_THREADS`.
 - Ready when `GET /health` returns 200. SIGTERM/SIGINT exits cleanly (cluster launchers kill their children).
 - Never create the schema; the DB file is pre-seeded by `bench/seed.ts`. Fail fast if the DB file or `JWT_SECRET` is missing.
 
@@ -49,7 +49,7 @@ Every route except `/health` and `/meta` requires `Authorization: Bearer <jwt>`.
 2. Header JSON is an object whose `alg` is `"HS256"`.
 3. HMAC-SHA256 over `header.payload` (the ASCII segments as sent) matches the signature, compared in constant time.
 4. Payload JSON is an object with `sub` (integer 1..2^53-1), `name` (string), `iss` exactly `"gbb"`, `exp` (integer 0..2^53-1) with `exp * 1000 > now`.
-Any failure, a missing header, or a scheme other than `Bearer ` → 401 `{"error":"unauthorized"}`. Use each framework's idiomatic auth hook; when a request has both bad auth and an invalid body/query, either the 401 or the 400 is acceptable (frameworks order parsing and auth differently, and load traffic never hits this). Implement verification as a small module on the runtime's standard crypto (Go `crypto/hmac` + `crypto/sha256`, `node:crypto` `createHmac` + `timingSafeEqual` in Bun and Node) so every variant does the same work; JWT libraries differ too much in what they do per call to compare fairly.
+Any failure, a missing header, or a scheme other than `Bearer ` → 401 `{"error":"unauthorized"}`. Use each framework's idiomatic auth hook; when a request has both bad auth and an invalid body/query, either the 401 or the 400 is acceptable (frameworks order parsing and auth differently, and load traffic never hits this). Implement verification as a small module on the runtime's standard crypto (Go `crypto/hmac` + `crypto/sha256`, Rust's RustCrypto `hmac` + `sha2`, `node:crypto` `createHmac` + `timingSafeEqual` in Bun and Node) so every variant does the same work; JWT libraries differ too much in what they do per call to compare fairly.
 
 ## Derived fields (computed in code, per post, every time)
 On `body` (ASCII):

@@ -49,7 +49,7 @@ start() {
   systemd-run --user --unit="$unit" --collect --quiet \
     -p "AllowedCPUs=$SERVER_CPUS" -p "MemoryMax=$SERVER_MEM" -p MemorySwapMax=0 \
     -p "WorkingDirectory=$ROOT" -E "NODE_ENV=production" -E "DB_PATH=$db" \
-    -E "PORT=$PORT" -E "JWT_SECRET=$JWT_SECRET" -E "WORKERS=$N" -E "GOMAXPROCS=$VARIANT_GOMAXPROCS" "${tuning_args[@]}" "${CMD[@]}"
+    -E "PORT=$PORT" -E "JWT_SECRET=$JWT_SECRET" -E "WORKERS=$N" -E "GOMAXPROCS=$VARIANT_GOMAXPROCS" -E "TOKIO_WORKER_THREADS=$N" "${tuning_args[@]}" "${CMD[@]}"
   if ! wait_ready; then journalctl --user -u "$unit" -n 60 --no-pager >&2; exit 1; fi
   # The first worker answering /health doesn't mean every cluster worker is listening yet.
   sleep 1
@@ -66,8 +66,11 @@ wrk_version=$("$WRK" --version 2>&1 || true)
 wrk_version=${wrk_version%%$'\n'*}
 pgo_hash=""
 if [[ -f servers/go/default.pgo ]]; then read -r pgo_hash _ < <(sha256sum servers/go/default.pgo); fi
+rust_pgo_hash=""
+if [[ -f servers/rust/pgo/merged.profdata ]]; then read -r rust_pgo_hash _ < <(sha256sum servers/rust/pgo/merged.profdata); fi
 jq -n --arg cpu "$cpu_model" --arg kernel "$(uname -r)" --arg governor "$governor" \
   --arg go "$(mise exec -- go version)" --arg bun "$("$BUN" --version)" \
+  --arg rust "$(cd servers/rust && rustc --version)" --arg rust_pgo_sha256 "$rust_pgo_hash" \
   --arg elysia "$(jq -r .version servers/bun/node_modules/elysia/package.json)" \
   --arg node "$("$NODE" --version)" \
   --arg express "$(jq -r .version servers/node/node_modules/express/package.json)" \
@@ -78,7 +81,7 @@ jq -n --arg cpu "$cpu_model" --arg kernel "$(uname -r)" --arg governor "$governo
   --argjson conns "$CONNS" --argjson workers "$N" --argjson port "$PORT" \
   --arg gogc "$GO_GOGC" --arg gomemlimit "$GO_GOMEMLIMIT" --arg node_options "$NODE_TUNING" \
   --arg go_build "$(mise exec -- go version -m bin/go-server)" --arg pgo_sha256 "$pgo_hash" \
-  '{cpu:$cpu,kernel:$kernel,governor:$governor,go:$go,go_build:$go_build,pgo_sha256:$pgo_sha256,bun:$bun,elysia:$elysia,node:$node,express:$express,better_sqlite3:$better_sqlite3,wrk:$wrk,settings:{variants:$variants,scenarios:$scenarios,reps:$reps,duration_s:$duration,warmup_s:$warmup,connections:$conns,server_cpus:$server_cpus,load_cpus:$load_cpus,memory:$memory,workers:$workers,port:$port,gomaxprocs:{go:$workers,"go-4":4},tuning:{go:{GOGC:$gogc,GOMEMLIMIT:$gomemlimit},"go-4":{GOGC:$gogc,GOMEMLIMIT:$gomemlimit},node:{NODE_OPTIONS:$node_options},bun:{}}},meta:{}}' > "$RESULTS/env.json"
+  '{cpu:$cpu,kernel:$kernel,governor:$governor,go:$go,go_build:$go_build,pgo_sha256:$pgo_sha256,rust:$rust,rust_pgo_sha256:$rust_pgo_sha256,bun:$bun,elysia:$elysia,node:$node,express:$express,better_sqlite3:$better_sqlite3,wrk:$wrk,settings:{variants:$variants,scenarios:$scenarios,reps:$reps,duration_s:$duration,warmup_s:$warmup,connections:$conns,server_cpus:$server_cpus,load_cpus:$load_cpus,memory:$memory,workers:$workers,port:$port,gomaxprocs:{go:$workers,"go-4":4},tokio_worker_threads:{rust:$workers},tuning:{go:{GOGC:$gogc,GOMEMLIMIT:$gomemlimit},"go-4":{GOGC:$gogc,GOMEMLIMIT:$gomemlimit},rust:{allocator:"mimalloc"},node:{NODE_OPTIONS:$node_options},bun:{}}},meta:{}}' > "$RESULTS/env.json"
 for variant in "${variants[@]}"; do
   dir="$RESULTS/runs/meta-$variant"; mkdir -p "$dir"; cp data/seed.db "$DB"
   start "$variant" "$DB"

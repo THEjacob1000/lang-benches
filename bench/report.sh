@@ -2,8 +2,8 @@
 set -euo pipefail
 RESULTS=${1:?Usage: bench/report.sh RESULTS_DIR}
 {
-  printf '# Go vs Bun vs Node benchmark\n\n'
-  jq -r '"CPU: \(.cpu)  \nKernel: \(.kernel)  \nGovernor: \(.governor)  \nGo: \(.go)  \nBun: \(.bun)  \nElysia: \(.elysia)  \nNode: \(.node)  \nExpress: \(.express)  \nbetter-sqlite3: \(.better_sqlite3)  \nwrk: \(.wrk)\n\n## Settings\n\n```json\n\(.settings | tojson)\n```\n\n## Server metadata\n\n```json\n\(.meta | tojson)\n```\n"' "$RESULTS/env.json"
+  printf '# Go vs Rust vs Bun vs Node benchmark\n\n'
+  jq -r '"CPU: \(.cpu)  \nKernel: \(.kernel)  \nGovernor: \(.governor)  \nGo: \(.go)  \nRust: \(.rust // "n/a")  \nBun: \(.bun)  \nElysia: \(.elysia)  \nNode: \(.node)  \nExpress: \(.express)  \nbetter-sqlite3: \(.better_sqlite3)  \nwrk: \(.wrk)\n\n## Settings\n\n```json\n\(.settings | tojson)\n```\n\n## Server metadata\n\n```json\n\(.meta | tojson)\n```\n"' "$RESULTS/env.json"
   jq -s -r --slurpfile env "$RESULTS/env.json" '
     def median:
       sort | length as $n |
@@ -20,6 +20,7 @@ RESULTS=${1:?Usage: bench/report.sh RESULTS_DIR}
       if . == "node" then "Node/Express"
       elif . == "go" then "Go"
       elif . == "go-4" then "Go (4 threads)"
+      elif . == "rust" then "Rust"
       elif . == "bun" then "Bun (\($workers) procs)"
       elif . == "elysia" then "Elysia (\($workers) procs)"
       elif . == "bun-1" then "Bun (1 proc)"

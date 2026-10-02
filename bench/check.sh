@@ -55,13 +55,14 @@ for variant in "${requested[@]}"; do if [[ $variant != go ]]; then variants+=("$
 for variant in "${variants[@]}"; do
   db="$TMP/$variant.db"; cp data/seed.db "$db"
   command_for "$variant"
-  NODE_ENV=production DB_PATH="$db" JWT_SECRET="$JWT_SECRET" PORT="$PORT" WORKERS=2 GOMAXPROCS="$VARIANT_GOMAXPROCS" "${CMD[@]}" > "$TMP/$variant.log" 2>&1 & pid=$!
+  NODE_ENV=production DB_PATH="$db" JWT_SECRET="$JWT_SECRET" PORT="$PORT" WORKERS=2 GOMAXPROCS="$VARIANT_GOMAXPROCS" TOKIO_WORKER_THREADS=2 "${CMD[@]}" > "$TMP/$variant.log" 2>&1 & pid=$!
   if ! wait_ready; then cat "$TMP/$variant.log" >&2; exit 1; fi
   sleep 1
   request health GET /health 200 '' missing
   request meta GET /meta 200 '' missing
   case "$variant" in
     go|go-4) jq -e '.runtime|startswith("go")' "$TMP/body" >/dev/null; [[ $(jq -r .framework "$TMP/body") == net/http ]] ;;
+    rust) jq -e '(.runtime|startswith("rust ")) and (.framework|startswith("axum "))' "$TMP/body" >/dev/null ;;
     bun|bun-1) jq -e '.runtime|startswith("bun ")' "$TMP/body" >/dev/null; [[ $(jq -r .framework "$TMP/body") == bun ]] ;;
     elysia) jq -e '(.runtime|startswith("bun ")) and (.framework|startswith("elysia "))' "$TMP/body" >/dev/null ;;
     node) jq -e '(.runtime|startswith("node ")) and (.framework|startswith("express "))' "$TMP/body" >/dev/null ;;
@@ -105,7 +106,7 @@ for variant in "${variants[@]}"; do
   [[ $(jq -c 'del(.id,.createdAt)' "$TMP/body") == '{"postId":1,"body":"A valid comment","author":{"id":1,"name":"User 1"}}' ]]
   request post-after GET /posts/1 200
   jq -e --argjson count "$count" --argjson id "$comment_id" '.post.commentCount==$count+1 and .comments[0].id==$id and .comments[0].body=="A valid comment" and .comments[0].author=={id:1,name:"User 1"}' "$TMP/body" >/dev/null
-  for payload in '{' null '[]' '{}' '{"body":false}' '{"body":null}' '{"body":1}' '{"body":""}'; do request "body-$payload" POST /posts/1/comments 400 "$payload"; done
+  for payload in '{' null '[]' '["ok"]' '{}' '{"body":false}' '{"body":null}' '{"body":1}' '{"body":""}'; do request "body-$payload" POST /posts/1/comments 400 "$payload"; done
   request body-long POST /posts/1/comments 400 "$(jq -nc '{body:("x"*2001)}')"
   request body-min POST /posts/2/comments 201 '{"body":"x"}'
   request body-max POST /posts/2/comments 201 "$(jq -nc '{body:("x"*2000)}')"

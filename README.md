@@ -1,6 +1,6 @@
-# Go vs Bun vs Node: realistic HTTP APIs
+# Go vs Rust vs Bun vs Node: realistic HTTP APIs
 
-A Linux benchmark of Go `net/http`, raw `Bun.serve`, Elysia 2.0 beta, and a Node baseline using Express 5 and better-sqlite3. `go` runs one process with `GOMAXPROCS` matching allocated threads; `go-4` runs that same executable with `GOMAXPROCS=4`, the same tuning and the full server CPU cgroup. `bun`, `elysia`, and `node` run one worker per allocated CPU thread; `bun-1` is a single-process reference with the full cgroup too. Toolchains are pinned in `mise.toml`.
+A Linux benchmark of Go `net/http`, Rust (axum on tokio), raw `Bun.serve`, Elysia 2.0 beta, and a Node baseline using Express 5 and better-sqlite3. `go` runs one process with `GOMAXPROCS` matching allocated threads; `go-4` runs that same executable with `GOMAXPROCS=4`, the same tuning and the full server CPU cgroup. `rust` runs one process with `TOKIO_WORKER_THREADS` matching allocated threads. `bun`, `elysia`, and `node` run one worker per allocated CPU thread; `bun-1` is a single-process reference with the full cgroup too. Toolchains are pinned in `mise.toml`, plus `servers/rust/rust-toolchain.toml` for Rust (the repo root's toolchain file belongs to the unrelated template crate).
 
 SQLite is a near-zero-latency **data source**, not the subject of the comparison. Indexed lookups feed representative runtime work: HS256 JWT authentication, validation, shaping nested objects, deriving word counts, reading time, tags and excerpts, and JSON serialization. The [contract](docs/CONTRACT.md) fixes the SQL, pragmas, auth rules and byte-exact responses.
 
@@ -35,13 +35,13 @@ The runner records environment settings, Go binary build settings and profile ha
 
 ## Runtime tuning
 
-Go defaults to `GOGC=off GOMEMLIMIT=1536MiB`: avoid frequent collection of a small live heap, while retaining a soft memory limit. Node uses `NODE_OPTIONS=--max-semi-space-size=64` to give short-lived request objects a larger young generation. Bun has no extra tuning. Settings are recorded in `env.json`.
+Go defaults to `GOGC=off GOMEMLIMIT=1536MiB`: avoid frequent collection of a small live heap, while retaining a soft memory limit. Rust uses mimalloc as its global allocator and a release profile with fat LTO and one codegen unit. Node uses `NODE_OPTIONS=--max-semi-space-size=64` to give short-lived request objects a larger young generation. Bun has no extra tuning. Settings are recorded in `env.json`.
 
-`bench/pgo.sh` profiles a pprof-enabled Go build during a 35-second mixed workload after five seconds of warmup, captures a 30-second CPU profile into `servers/go/default.pgo`, then rebuilds the normal executable. Go automatically uses that profile on subsequent builds. This is fair profile-guided optimisation: JavaScript JITs already optimise from runtime profiles during warmup and measurement. Profiling uses the same cgroup, CPU allocation, tuning and fresh tmpfs seed as the runner, not a synthetic microbenchmark.
+`bench/pgo.sh` profiles Go and Rust (`PGO_TARGETS="go rust"` by default) under the same mixed workload after five seconds of warmup. Go captures a 30-second CPU profile from a pprof-enabled build into `servers/go/default.pgo` (committed, as Go recommends), which `go build` picks up automatically. Rust runs an instrumented build (`-Cprofile-generate`) and merges the result into `servers/rust/pgo/merged.profdata`, which `servers/rust/build.sh` applies with `-Cprofile-use`. That file is toolchain-specific and not committed; `bench/setup.sh` generates it when missing. This is fair profile-guided optimisation: JavaScript JITs already optimise from runtime profiles during warmup and measurement. Profiling uses the same cgroup, CPU allocation, tuning and fresh tmpfs seed as the runner, not a synthetic microbenchmark.
 
 ## Fairness controls
 
-- Same cgroup CPU set, memory cap and no swap. Go's `GOMAXPROCS` and JS worker counts match allocated threads, except the explicit `go-4` and `bun-1` references.
+- Same cgroup CPU set, memory cap and no swap. Go's `GOMAXPROCS`, Rust's tokio worker threads and JS worker counts match allocated threads, except the explicit `go-4` and `bun-1` references.
 - wrk uses a disjoint CPU set and one load thread per load CPU. Default topology pairs CPUs N and N+8 as SMT siblings; adjust for your machine.
 - A ten-second wrk timeout exceeds SQLite's five-second busy timeout.
 - Identical SQLite settings and prepared SQL. Writes step to completion, including `INSERT ... RETURNING`, to preserve WAL autocheckpointing; single-row reads use normal first-row APIs.
@@ -54,7 +54,7 @@ Go defaults to `GOGC=off GOMEMLIMIT=1536MiB`: avoid frequent collection of a sma
 
 | Variable | Default |
 |---|---|
-| `VARIANTS` | `go go-4 bun elysia node bun-1` (`check.sh` always includes Go) |
+| `VARIANTS` | `go go-4 rust bun elysia node bun-1` (`check.sh` always includes Go) |
 | `SCENARIOS` | `health feed post mixed` |
 | `REPS`, `DURATION`, `WARMUP`, `CONNS` | `3`, `20` seconds, `5` seconds, `64` |
 | `SERVER_CPUS`, `LOAD_CPUS` | `0-3,8-11`, `4-7,12-15` |
@@ -68,33 +68,33 @@ For example: `REPS=5 SCENARIOS="feed mixed" bench/run.sh`.
 
 ## Known asymmetries
 
-Go serializes writers through one immediate-transaction connection and has a reader pool; JS workers own separate connections. SQLite still permits only one writer in `mixed`, so JS processes contend through file locks and the busy handler. The models are idiomatic, not identical.
+Go and Rust each serialize writers through one immediate-transaction connection and use separate read connections; JS workers own separate connections. SQLite still permits only one writer in `mixed`, so JS processes contend through file locks and the busy handler. The models are idiomatic, not identical.
 
-Bun uses `SO_REUSEPORT`, hashing long-lived connections unevenly across workers; Node clusters distribute connections round-robin. More connections reduce imbalance. Go, Bun and better-sqlite3 may embed different SQLite builds; `/meta` records their versions. GC, schedulers and process/cache overhead also differ.
+Bun uses `SO_REUSEPORT`, hashing long-lived connections unevenly across workers; Node clusters distribute connections round-robin. More connections reduce imbalance. Go, Rust, Bun and better-sqlite3 embed different SQLite builds; `/meta` records their versions. Rust's bundled SQLite (libsqlite3-sys) is built with `-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0` in `servers/rust/.cargo/config.toml`: libsqlite3-sys enables memory management by default, which makes every connection in the process share one mutex-guarded page cache, and memory statistics add a global mutex on each allocation. mattn and better-sqlite3 don't share the page cache, so leaving it on cost Rust over half its `post` throughput for a SQLite build difference rather than anything Rust does. Go's mattn build keeps `MEMSTATUS` on because the flag measured within 1% there. GC, schedulers and process/cache overhead also differ.
 
 wrk is closed-loop: stalled connections stop sending requests, understating tail latency under write contention. Health measures HTTP overhead only. Always interpret successful work and errors together rather than comparing raw request counts alone.
 
 ## Results
 
-Full run on 2026-10-02 (Ryzen 7 9800X3D, kernel 7.0, defaults above). Full report: [`results/20261002T020027.618685285/summary.md`](results/20261002T020027.618685285/summary.md).
+Full run on 2026-10-02 (Ryzen 7 9800X3D, kernel 7.0, defaults above). Full report: [`results/20261002T042916.995333571/summary.md`](results/20261002T042916.995333571/summary.md). The Rust column was rerun after fixing its SQLite build flags (above), with the same settings on the same machine; every other column is from the one run.
 
-| Scenario | Metric | Node/Express | Go | Go (4 threads) | Bun (8 procs) | Elysia (8 procs) | Bun (1 proc) |
-|---|---|---:|---:|---:|---:|---:|---:|
-| health | RPS | 535k (1.00×) | 959k (1.79×) | 597k (1.11×) | **1.34M (2.50×)** | 1.24M (2.32×) | 306k (0.57×) |
-|  | p99 ms | 1.27 | 0.57 | 0.39 | 3.13 | 3.33 | **0.37** |
-|  | CPU µs/req | 14.7 | 8.1 | 6.7 | 5.5 | 6.0 | **3.4** |
-|  | Memory MiB | 536 | 1435 | 1436 | 130 | 302 | **15** |
-| feed | RPS | 42k (1.00×) | **61k (1.43×)** | 42k (0.99×) | 55k (1.29×) | 54k (1.26×) | 11k (0.26×) |
-|  | p99 ms | **3.05** | 3.66 | 12.6 | 3.43 | 3.33 | 9.10 |
-|  | CPU µs/req | 189 | 130 | 94.8 | 143 | 146 | **92.6** |
-|  | Memory MiB | 663 | 1585 | 1520 | 341 | 502 | **41** |
-| post | RPS | 121k (1.00×) | 153k (1.26×) | 103k (0.85×) | **201k (1.66×)** | 186k (1.53×) | 47k (0.39×) |
-|  | p99 ms | 1.40 | **1.21** | 1.93 | 1.84 | 2.48 | 2.26 |
-|  | CPU µs/req | 65.7 | 51.3 | 38.7 | 39.1 | 42.0 | **22.0** |
-|  | Memory MiB | 636 | 1585 | 1520 | 303 | 472 | **37** |
-| mixed | RPS | 45k (1.00×) | **59k (1.33×)** | 43k (0.96×) | 57k (1.29×) | 57k (1.28×) | 14k (0.31×) |
-|  | p99 ms | 7.71 | **5.51** | 10.5 | 6.79 | 6.74 | 7.02 |
-|  | CPU µs/req | 155 | 126 | 92.5 | 118 | 121 | **73.9** |
-|  | Memory MiB | 531 | 1484 | 1484 | 200 | 406 | **42** |
+| Scenario | Metric | Node/Express | Go | Go (4 threads) | Rust | Bun (8 procs) | Elysia (8 procs) | Bun (1 proc) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| health | RPS | 529k (1.00×) | 958k (1.81×) | 592k (1.12×) | 932k (1.76×) | **1.30M (2.46×)** | 1.19M (2.25×) | 303k (0.57×) |
+|  | p99 ms | 1.51 | 0.58 | 0.40 | **0.26** | 3.61 | 3.69 | 0.40 |
+|  | CPU µs/req | 15.0 | 8.2 | 6.7 | 4.2 | 5.6 | 6.1 | **3.4** |
+|  | Memory MiB | 532 | 1436 | 1435 | 17 | 133 | 312 | **16** |
+| feed | RPS | 42k (1.00×) | 61k (1.44×) | 40k (0.95×) | **89k (2.11×)** | 54k (1.28×) | 51k (1.21×) | 11k (0.26×) |
+|  | p99 ms | 3.16 | 3.67 | 11.0 | **1.37** | 3.66 | 4.22 | 8.94 |
+|  | CPU µs/req | 189 | 130 | 99.4 | **89.1** | 144 | 151 | 94.7 |
+|  | Memory MiB | 649 | 1585 | 1520 | 154 | 341 | 493 | **42** |
+| post | RPS | 119k (1.00×) | 144k (1.21×) | 102k (0.86×) | **293k (2.47×)** | 193k (1.63×) | 174k (1.47×) | 46k (0.39×) |
+|  | p99 ms | 1.50 | 1.76 | 1.95 | **0.92** | 2.63 | 3.49 | 2.53 |
+|  | CPU µs/req | 67.0 | 52.4 | 39.0 | 25.4 | 40.0 | 43.2 | **22.4** |
+|  | Memory MiB | 637 | 1585 | 1521 | 158 | 305 | 474 | **37** |
+| mixed | RPS | 44k (1.00×) | 58k (1.32×) | 39k (0.90×) | **95k (2.16×)** | 57k (1.30×) | 56k (1.28×) | 14k (0.31×) |
+|  | p99 ms | 7.32 | **5.71** | 11.6 | 5.73 | 6.73 | 7.07 | 7.81 |
+|  | CPU µs/req | 158 | 127 | 99.4 | 82.7 | 118 | 121 | **75.8** |
+|  | Memory MiB | 527 | 1484 | 1483 | 82 | 199 | 402 | **41** |
 
 Medians of 3 × 20 s runs, 8 server threads, 64 connections, no errors. Go's memory is the `GOMEMLIMIT` doing its job: with `GOGC=off` the heap grows to ~1.5 GiB before collecting, so that column shows the configured budget, not what Go needs.

@@ -1,0 +1,4 @@
+# libsqlite3-sys enables MEMORY_MANAGEMENT, which shares one mutex-guarded page cache across all
+# connections; mattn and better-sqlite3 don't. MEMSTATUS=0 is SQLite's recommended option.
+[env]
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

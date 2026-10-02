@@ -55,3 +55,7 @@ bin/
 results/*/runs/
 tools/wrk*/
 servers/bun/node_modules/
+# Toolchain-specific binary; bench/setup.sh regenerates it via bench/pgo.sh
+servers/rust/pgo/
+# Tracked despite the template's *config.to* rule: carries the SQLite build flags
+!servers/rust/.cargo/config.toml

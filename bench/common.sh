@@ -3,7 +3,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 BUN=$(mise which bun)
 NODE=$(mise which node)
 PORT=${PORT:-3100}
-VARIANTS=${VARIANTS:-"go go-4 bun elysia node bun-1"}
+VARIANTS=${VARIANTS:-"go go-4 rust bun elysia node bun-1"}
 SCENARIOS=${SCENARIOS:-"health feed post mixed"}
 JWT_SECRET=${JWT_SECRET:-gbb-dev-secret-change-me}
 GO_GOGC=${GO_GOGC:-off}
@@ -34,6 +34,7 @@ command_for() {
   case "$1" in
     go) CMD=("$ROOT/bin/go-server") ;;
     go-4) CMD=("$ROOT/bin/go-server"); VARIANT_GOMAXPROCS=4 ;;
+    rust) CMD=("$ROOT/bin/rust-server") ;;
     bun) CMD=("$BUN" "$ROOT/servers/bun/cluster.ts" "$ROOT/servers/bun/raw.ts") ;;
     elysia) CMD=("$BUN" "$ROOT/servers/bun/cluster.ts" "$ROOT/servers/bun/elysia.ts") ;;
     node) CMD=("$NODE" "$ROOT/servers/node/cluster.ts") ;;
