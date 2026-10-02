@@ -1,6 +1,6 @@
 # Go vs Rust vs Bun vs Node: realistic HTTP APIs
 
-A Linux benchmark of Go `net/http`, Rust (axum on tokio), raw `Bun.serve`, Elysia 2.0 beta, and a Node baseline using Express 5 and better-sqlite3. `go` runs one process with `GOMAXPROCS` matching allocated threads; `go-4` runs that same executable with `GOMAXPROCS=4`, the same tuning and the full server CPU cgroup. `rust` runs one process with `TOKIO_WORKER_THREADS` matching allocated threads. `bun`, `elysia`, and `node` run one worker per allocated CPU thread; `bun-1` is a single-process reference with the full cgroup too. Toolchains are pinned in `mise.toml`, plus `servers/rust/rust-toolchain.toml` for Rust.
+A benchmark of Go `net/http`, Rust (axum on tokio), raw `Bun.serve`, Elysia 2.0 beta, and a Node baseline using Express 5 and better-sqlite3, run in Docker Compose on Linux or macOS. `go` runs one process with `GOMAXPROCS` matching allocated threads; `go-4` runs that same executable with `GOMAXPROCS=4`, the same tuning and the full server CPU set. `rust` runs one process with `TOKIO_WORKER_THREADS` matching allocated threads. `bun`, `elysia`, and `node` run one worker per allocated CPU thread; `bun-1` is a single-process reference with the full CPU set too. Toolchains are pinned in `mise.toml`, plus `servers/rust/rust-toolchain.toml` for Rust, and installed into the `lang-benches` image.
 
 SQLite is a near-zero-latency **data source**, not the subject of the comparison. Indexed lookups feed representative runtime work: HS256 JWT authentication, validation, shaping nested objects, deriving word counts, reading time, tags and excerpts, and JSON serialization. The [contract](docs/CONTRACT.md) fixes the SQL, pragmas, auth rules and byte-exact responses.
 
@@ -20,18 +20,20 @@ Implementations must be idiomatic, clean, maintainable production code. Prepared
 
 ## Run
 
-Requires Linux, a user systemd manager with delegated cpuset/CPU/memory controllers, mise, git, make, a C compiler, OpenSSL development headers, curl, jq and taskset. wrk 4.2.0 bundles LuaJIT.
+Requires Docker with Compose v2 and cgroup v2 (Docker Desktop, OrbStack or Docker Engine on Linux), bash and jq. Everything else (toolchains, wrk 4.2.0 with its bundled LuaJIT, the servers) is built into the image. On macOS the servers run in Docker's Linux VM, so give the VM the CPUs and memory you want measured; VM results aren't comparable with bare-metal Linux.
 
 ```bash
 bench/setup.sh
 bench/check.sh
-bench/pgo.sh       # optional: collect a representative Go profile and rebuild
+bench/pgo.sh       # optional: collect fresh Go and Rust profiles and rebuild the image
 bench/run.sh
 ```
 
 With [cargo-make](https://github.com/sagiegurari/cargo-make), `cargo make` runs setup, check and run in order; `cargo make <setup|check|pgo|run|seed>` runs one step, and `cargo make report results/<timestamp>` rebuilds a summary. Environment overrides such as `VARIANTS` or `REPS` pass through.
 
-Setup installs frozen dependencies, builds wrk and Go (`-pgo=auto`), and seeds when the database or tokens are missing. Regenerate both with `mise exec -- bun bench/seed.ts`. Set the same `JWT_SECRET` for seeding and running; its development default is `gbb-dev-secret-change-me`. Conformance exercises routes, auth failures, pagination, validation boundaries, mutation effects, oversized bodies and writer lock timeout, and diffs every variant against Go. Only metadata, unspecified bodies and newly created timestamps are normalized.
+Setup builds the `lang-benches` image (frozen dependencies, wrk, Go with `-pgo=auto`, Rust), and seeds the `lang-benches-data` volume when the database or tokens are missing. Regenerate both with `cargo make seed`. Set the same `JWT_SECRET` for seeding and running; its development default is `gbb-dev-secret-change-me`. Conformance exercises routes, auth failures, pagination, validation boundaries, mutation effects, oversized bodies, writer lock timeout and SIGTERM shutdown, and diffs every variant against Go. Only metadata, unspecified bodies and newly created timestamps are normalized.
+
+`compose.yaml` defines two containers. `server` runs one variant with the server CPU set, the memory cap and no swap. `tools` runs wrk, conformance checks and cgroup sampling on the load CPU set. The server joins the `tools` network namespace, so load reaches `127.0.0.1` without Docker's port forwarding. The bench scripts set the CPU sets and the server command, so run them rather than `docker compose` directly.
 
 The runner records environment settings, Go binary build settings and profile hash, `/meta`, raw wrk output, CPU/memory metrics and a summary under `results/<timestamp>/`. The summary combines scenarios in one table, with Node-relative throughput, latency, CPU/request and peak anonymous memory, plus error and load-generator saturation flags. Rebuild it with `bench/report.sh results/<timestamp>`.
 
@@ -39,18 +41,18 @@ The runner records environment settings, Go binary build settings and profile ha
 
 Go defaults to `GOGC=off GOMEMLIMIT=1536MiB`: avoid frequent collection of a small live heap, while retaining a soft memory limit. Rust uses mimalloc as its global allocator and a release profile with fat LTO and one codegen unit. Node uses `NODE_OPTIONS=--max-semi-space-size=64` to give short-lived request objects a larger young generation. Bun has no extra tuning. Settings are recorded in `env.json`.
 
-`bench/pgo.sh` profiles Go and Rust (`PGO_TARGETS="go rust"` by default) under the same mixed workload after five seconds of warmup. Go captures a 30-second CPU profile from a pprof-enabled build into `servers/go/default.pgo` (committed, as Go recommends), which `go build` picks up automatically. Rust runs an instrumented build (`-Cprofile-generate`) and merges the result into `servers/rust/pgo/merged.profdata`, which `servers/rust/build.sh` applies with `-Cprofile-use`. That file is toolchain-specific and not committed; `bench/setup.sh` generates it when missing. This is fair profile-guided optimisation: JavaScript JITs already optimise from runtime profiles during warmup and measurement. Profiling uses the same cgroup, CPU allocation, tuning and fresh tmpfs seed as the runner, not a synthetic microbenchmark.
+`bench/pgo.sh` profiles Go and Rust (`PGO_TARGETS="go rust"` by default) under the same mixed workload after five seconds of warmup. Go captures a 30-second CPU profile from a pprof-enabled build into `servers/go/default.pgo` (committed, as Go recommends), which `go build` picks up automatically. Rust runs an instrumented build (`-Cprofile-generate`) and merges the result into `servers/rust/pgo/merged.profdata`, which `servers/rust/build.sh` applies with `-Cprofile-use`. That file is toolchain-specific and not committed; `bench/setup.sh` generates it when missing. Both profiles are copied back into the checkout, then the image is rebuilt. This is fair profile-guided optimisation: JavaScript JITs already optimise from runtime profiles during warmup and measurement. Profiling uses the same container limits, CPU allocation, tuning and fresh tmpfs seed as the runner, not a synthetic microbenchmark.
 
 ## Fairness controls
 
-- Same cgroup CPU set, memory cap and no swap. Go's `GOMAXPROCS`, Rust's tokio worker threads and JS worker counts match allocated threads, except the explicit `go-4` and `bun-1` references.
-- wrk uses a disjoint CPU set and one load thread per load CPU. Default topology pairs CPUs N and N+8 as SMT siblings; adjust for your machine.
+- Same container CPU set, memory cap and no swap. Go's `GOMAXPROCS`, Rust's tokio worker threads and JS worker counts match allocated threads, except the explicit `go-4` and `bun-1` references.
+- wrk uses a disjoint CPU set and one load thread per load CPU. By default each side gets half of the Docker host's physical cores, with their SMT siblings, so 16 threads pairing CPUs N and N+8 split into `0,8,1,9,2,10,3,11` and `4,12,5,13,6,14,7,15`.
 - A ten-second wrk timeout exceeds SQLite's five-second busy timeout.
 - Identical SQLite settings and prepared SQL. Writes step to completion, including `INSERT ... RETURNING`, to preserve WAL autocheckpointing; single-row reads use normal first-row APIs.
 - Every run gets a fresh checkpointed seed copy on tmpfs; warmup writes remain in that copy. This avoids measuring disk writeback rather than runtime work.
 - Variants rotate by repetition, with two seconds between runs. Reports use independent medians for throughput, latency, errors and CPU/request; memory is the maximum over repetitions.
 - CPU includes all workers via cgroup usage. Anonymous memory is sampled every 200 ms; cgroup peak memory also includes written tmpfs/WAL pages. Peak is reset after warmup when allowed, with failures recorded.
-- No request logging or development mode. Versions, CPU, kernel, governor, settings and SQLite versions are recorded.
+- No request logging or development mode. Versions, CPU, kernel, governor, Docker host, settings and SQLite versions are recorded.
 
 ## Knobs
 
@@ -59,8 +61,8 @@ Go defaults to `GOGC=off GOMEMLIMIT=1536MiB`: avoid frequent collection of a sma
 | `VARIANTS` | `go go-4 rust bun elysia node bun-1` (`check.sh` always includes Go) |
 | `SCENARIOS` | `health feed post mixed` |
 | `REPS`, `DURATION`, `WARMUP`, `CONNS` | `3`, `20` seconds, `5` seconds, `64` |
-| `SERVER_CPUS`, `LOAD_CPUS` | `0-3,8-11`, `4-7,12-15` |
-| `SERVER_MEM`, `DB_DIR`, `PORT` | `16G`, `/dev/shm`, `3100` |
+| `SERVER_CPUS`, `LOAD_CPUS` | Half the Docker host's physical cores each |
+| `SERVER_MEM`, `PORT` | `16G`, `3100` |
 | `GO_GOGC`, `GO_GOMEMLIMIT` | `off`, `1536MiB` |
 | `NODE_TUNING` | `--max-semi-space-size=64` |
 | `JWT_SECRET` | `gbb-dev-secret-change-me` |

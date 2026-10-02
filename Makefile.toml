@@ -30,6 +30,6 @@ command = "bench/report.sh"
 args = ["${@}"]
 
 [tasks.seed]
-description = "Regenerate the database and tokens."
-command = "mise"
-args = ["exec", "--", "bun", "bench/seed.ts"]
+description = "Regenerate the database and tokens in the lang-benches-data volume."
+command = "docker"
+args = ["run", "--rm", "-e", "JWT_SECRET", "-v", "lang-benches-data:/bench/data", "lang-benches", "bun", "bench/seed.ts"]

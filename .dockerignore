@@ -1,0 +1,9 @@
+.jj
+.git
+.env*
+bin
+data
+results
+tools
+**/node_modules
+servers/rust/target

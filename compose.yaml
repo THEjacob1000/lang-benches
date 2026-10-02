@@ -1,0 +1,38 @@
+# Driven by bench/*.sh, which set SERVER_CPUS, LOAD_CPUS, SERVER_MEM and SERVER_CMD.
+name: lang-benches
+
+services:
+  tools:
+    image: lang-benches
+    pull_policy: never
+    init: true
+    command: sleep infinity
+    cpuset: ${LOAD_CPUS:?run through bench/*.sh}
+    # Reads and resets the server container's cgroup counters.
+    privileged: true
+    cgroup: host
+    volumes:
+      - data:/bench/data
+      - scratch:/scratch
+
+  server:
+    image: lang-benches
+    pull_policy: never
+    init: true
+    # Shares the tools network namespace, so wrk reaches 127.0.0.1 without Docker's port forwarding.
+    network_mode: service:tools
+    cpuset: ${SERVER_CPUS:?run through bench/*.sh}
+    mem_limit: ${SERVER_MEM:?run through bench/*.sh}
+    memswap_limit: ${SERVER_MEM:?run through bench/*.sh}
+    command: ${SERVER_CMD:-true}
+    volumes:
+      - scratch:/scratch
+
+volumes:
+  data:
+    name: lang-benches-data
+    external: true
+  scratch:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs

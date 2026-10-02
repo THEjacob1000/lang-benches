@@ -3,7 +3,7 @@ set -euo pipefail
 RESULTS=${1:?Usage: bench/report.sh RESULTS_DIR}
 {
   printf '# Go vs Rust vs Bun vs Node benchmark\n\n'
-  jq -r '"CPU: \(.cpu)  \nKernel: \(.kernel)  \nGovernor: \(.governor)  \nGo: \(.go)  \nRust: \(.rust // "n/a")  \nBun: \(.bun)  \nElysia: \(.elysia)  \nNode: \(.node)  \nExpress: \(.express)  \nbetter-sqlite3: \(.better_sqlite3)  \nwrk: \(.wrk)\n\n## Settings\n\n```json\n\(.settings | tojson)\n```\n\n## Server metadata\n\n```json\n\(.meta | tojson)\n```\n"' "$RESULTS/env.json"
+  jq -r '"CPU: \(.cpu)  \nKernel: \(.kernel)  \nGovernor: \(.governor)  \nDocker: \(.docker // "n/a")  \nGo: \(.go)  \nRust: \(.rust // "n/a")  \nBun: \(.bun)  \nElysia: \(.elysia)  \nNode: \(.node)  \nExpress: \(.express)  \nbetter-sqlite3: \(.better_sqlite3)  \nwrk: \(.wrk)\n\n## Settings\n\n```json\n\(.settings | tojson)\n```\n\n## Server metadata\n\n```json\n\(.meta | tojson)\n```\n"' "$RESULTS/env.json"
   jq -s -r --slurpfile env "$RESULTS/env.json" '
     def median:
       sort | length as $n |
