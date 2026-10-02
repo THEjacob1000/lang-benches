@@ -6,7 +6,7 @@ cd "$(dirname -- "${BASH_SOURCE[0]}")/.."
 id=$1 variant=$2 rep=$3
 out=/scratch/out
 rm -rf "$out"; mkdir -p "$out"
-cgroup=$(find /sys/fs/cgroup -maxdepth 3 -type d -name "*$id*" -print -quit)
+cgroup=$(find /sys/fs/cgroup -type d -name "*$id*" -print -quit)
 if [[ -z $cgroup ]]; then echo "No cgroup found for server container $id" >&2; exit 1; fi
 peak_anon() {
   local max=0 key value

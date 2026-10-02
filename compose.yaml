@@ -25,6 +25,10 @@ services:
     mem_limit: ${SERVER_MEM:?run through bench/*.sh}
     memswap_limit: ${SERVER_MEM:?run through bench/*.sh}
     command: ${SERVER_CMD:-true}
+    # The old bare-process flow had no syscall filtering, which costs some runtimes more than others.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
     volumes:
       - scratch:/scratch
 

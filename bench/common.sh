@@ -17,11 +17,15 @@ tools() { compose exec -T tools "$@"; }
 build_image() { docker build -t "$IMAGE" "$ROOT"; }
 
 start_tools() {
-  local default_server default_load
-  if [[ -z ${SERVER_CPUS:-} || -z ${LOAD_CPUS:-} ]]; then
-    read -r default_server default_load < <(docker run --rm "$IMAGE" bench/cpusets.sh)
+  # Picks up checkout edits; a no-op from the layer cache when nothing changed.
+  docker build --quiet -t "$IMAGE" "$ROOT" >/dev/null
+  if [[ -z ${SERVER_CPUS:-} && -z ${LOAD_CPUS:-} ]]; then
+    read -r SERVER_CPUS LOAD_CPUS < <(docker run --rm "$IMAGE" bench/cpusets.sh)
+  elif [[ -z ${SERVER_CPUS:-} || -z ${LOAD_CPUS:-} ]]; then
+    echo "Set both SERVER_CPUS and LOAD_CPUS, or neither" >&2
+    exit 1
   fi
-  export SERVER_CPUS=${SERVER_CPUS:-$default_server} LOAD_CPUS=${LOAD_CPUS:-$default_load}
+  export SERVER_CPUS LOAD_CPUS
   if [[ -n $(compose ps -aq) ]]; then
     echo "lang-benches containers already exist; finish the other benchmark or run: docker compose -p lang-benches down" >&2
     exit 1
