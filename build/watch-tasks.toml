@@ -1,7 +1,0 @@
-[tasks.watch]
-command = "cargo"
-args = ["watch", "-q", "-c", "-w", "src/", "-x", "run", "${@}"]
-
-[tasks.watch_release]
-command = "cargo"
-args = ["watch", "-q", "-c", "-w", "src/", "-x", "run --release", "${@}"]

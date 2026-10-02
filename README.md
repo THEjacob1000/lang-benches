@@ -1,6 +1,6 @@
 # Go vs Rust vs Bun vs Node: realistic HTTP APIs
 
-A Linux benchmark of Go `net/http`, Rust (axum on tokio), raw `Bun.serve`, Elysia 2.0 beta, and a Node baseline using Express 5 and better-sqlite3. `go` runs one process with `GOMAXPROCS` matching allocated threads; `go-4` runs that same executable with `GOMAXPROCS=4`, the same tuning and the full server CPU cgroup. `rust` runs one process with `TOKIO_WORKER_THREADS` matching allocated threads. `bun`, `elysia`, and `node` run one worker per allocated CPU thread; `bun-1` is a single-process reference with the full cgroup too. Toolchains are pinned in `mise.toml`, plus `servers/rust/rust-toolchain.toml` for Rust (the repo root's toolchain file belongs to the unrelated template crate).
+A Linux benchmark of Go `net/http`, Rust (axum on tokio), raw `Bun.serve`, Elysia 2.0 beta, and a Node baseline using Express 5 and better-sqlite3. `go` runs one process with `GOMAXPROCS` matching allocated threads; `go-4` runs that same executable with `GOMAXPROCS=4`, the same tuning and the full server CPU cgroup. `rust` runs one process with `TOKIO_WORKER_THREADS` matching allocated threads. `bun`, `elysia`, and `node` run one worker per allocated CPU thread; `bun-1` is a single-process reference with the full cgroup too. Toolchains are pinned in `mise.toml`, plus `servers/rust/rust-toolchain.toml` for Rust.
 
 SQLite is a near-zero-latency **data source**, not the subject of the comparison. Indexed lookups feed representative runtime work: HS256 JWT authentication, validation, shaping nested objects, deriving word counts, reading time, tags and excerpts, and JSON serialization. The [contract](docs/CONTRACT.md) fixes the SQL, pragmas, auth rules and byte-exact responses.
 
@@ -76,7 +76,7 @@ wrk is closed-loop: stalled connections stop sending requests, understating tail
 
 ## Results
 
-Full run on 2026-10-02 (Ryzen 7 9800X3D, kernel 7.0, defaults above). Full report: [`results/20261002T042916.995333571/summary.md`](results/20261002T042916.995333571/summary.md). The Rust column was rerun after fixing its SQLite build flags (above), with the same settings on the same machine; every other column is from the one run.
+Full run on 2026-10-02 (Ryzen 7 9800X3D, kernel 7.0, defaults above). The Rust column was rerun after fixing its SQLite build flags (above), with the same settings on the same machine; every other column is from the one run.
 
 | Scenario | Metric | Node/Express | Go | Go (4 threads) | Rust | Bun (8 procs) | Elysia (8 procs) | Bun (1 proc) |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
