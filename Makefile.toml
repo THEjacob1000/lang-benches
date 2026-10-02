@@ -1,0 +1,35 @@
+[config]
+skip_core_tasks = true
+
+[tasks.default]
+alias = "bench"
+
+[tasks.bench]
+description = "Set up, verify conformance, then run the full benchmark."
+dependencies = ["setup", "check", "run"]
+
+[tasks.setup]
+description = "Install dependencies, build wrk and the servers, seed when missing."
+command = "bench/setup.sh"
+
+[tasks.check]
+description = "Conformance-check every variant against Go."
+command = "bench/check.sh"
+
+[tasks.pgo]
+description = "Collect Go and Rust PGO profiles and rebuild."
+command = "bench/pgo.sh"
+
+[tasks.run]
+description = "Run the benchmark into results/<timestamp>/."
+command = "bench/run.sh"
+
+[tasks.report]
+description = "Rebuild a summary: cargo make report results/<timestamp>"
+command = "bench/report.sh"
+args = ["${@}"]
+
+[tasks.seed]
+description = "Regenerate the database and tokens."
+command = "mise"
+args = ["exec", "--", "bun", "bench/seed.ts"]

@@ -29,6 +29,8 @@ bench/pgo.sh       # optional: collect a representative Go profile and rebuild
 bench/run.sh
 ```
 
+With [cargo-make](https://github.com/sagiegurari/cargo-make), `cargo make` runs setup, check and run in order; `cargo make <setup|check|pgo|run|seed>` runs one step, and `cargo make report results/<timestamp>` rebuilds a summary. Environment overrides such as `VARIANTS` or `REPS` pass through.
+
 Setup installs frozen dependencies, builds wrk and Go (`-pgo=auto`), and seeds when the database or tokens are missing. Regenerate both with `mise exec -- bun bench/seed.ts`. Set the same `JWT_SECRET` for seeding and running; its development default is `gbb-dev-secret-change-me`. Conformance exercises routes, auth failures, pagination, validation boundaries, mutation effects, oversized bodies and writer lock timeout, and diffs every variant against Go. Only metadata, unspecified bodies and newly created timestamps are normalized.
 
 The runner records environment settings, Go binary build settings and profile hash, `/meta`, raw wrk output, CPU/memory metrics and a summary under `results/<timestamp>/`. The summary combines scenarios in one table, with Node-relative throughput, latency, CPU/request and peak anonymous memory, plus error and load-generator saturation flags. Rebuild it with `bench/report.sh results/<timestamp>`.
