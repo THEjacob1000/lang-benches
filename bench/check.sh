@@ -5,47 +5,47 @@ cd "$ROOT"
 TMP=$(mktemp -d)
 pid=""; lock_pid=""
 cleanup() {
-  if [[ -n $lock_pid ]]; then kill "$lock_pid" 2>/dev/null || true; wait "$lock_pid" 2>/dev/null || true; fi
-  if [[ -n $pid ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+  for child in "$lock_pid" "$pid"; do if [[ -n $child ]]; then kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi; done
   rm -rf "$TMP"
 }
 trap cleanup EXIT
 if curl --fail --silent --max-time 1 "http://127.0.0.1:$PORT/health" >/dev/null; then echo "Port $PORT is already occupied" >&2; exit 1; fi
+read -r token < data/tokens.txt
+JWT_SECRET="$JWT_SECRET" "$BUN" -e '
+import {createHmac} from "node:crypto";
+const base={sub:1,name:"User 1",iss:"gbb",exp:Math.floor(Date.now()/1000)+3600};
+function mint(payload,header={alg:"HS256"}) { const input=[header,payload].map(v=>Buffer.from(JSON.stringify(v)).toString("base64url")).join("."); return input+"."+createHmac("sha256",process.env.JWT_SECRET).update(input).digest("base64url"); }
+for (const [name,payload,header] of [["expired",{...base,exp:1}], ["issuer",{...base,iss:"other"}], ["float",{...base,sub:1.5}], ["none",base,{alg:"none"}], ["name",{...base,name:1}], ["sub",{...base,sub:0}], ["exp",{...base,exp:1.5}], ["header",base,[]], ["payload",[]]]) console.log(name+" "+mint(payload,header));
+for (const sub of ["1",9007199254740992]) console.log("sub-"+sub+" "+mint({...base,sub}));
+console.log("exp-string "+mint({...base,exp:"2100000000"}));
+const valid=mint(base); const alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+console.log("noncanonical "+valid.slice(0,-1)+alphabet[alphabet.indexOf(valid.at(-1))+1]);
+' > "$TMP/bad-tokens"
 request() {
-  local label=$1 method=$2 path=$3 expected=$4 payload=${5:-} unspecified=${6:-false}
-  local status type body
+  local label=$1 method=$2 path=$3 expected=$4 payload=${5:-} auth=${6:-Bearer $token} unspecified=${7:-false}
+  local status body type before after
   local -a args=(-sS --max-time 15 -D "$TMP/headers" -o "$TMP/body" -w '%{http_code}' -X "$method")
+  if [[ $auth != missing ]]; then args+=(-H "Authorization: $auth"); fi
   if [[ $method == POST ]]; then args+=(-H 'Content-Type: application/json' --data-binary "$payload"); fi
+  if [[ $expected == 201 ]]; then before=$(date +%s%3N); fi
   status=$(curl "${args[@]}" "http://127.0.0.1:$PORT$path")
-  type=$(tr -d '\r' < "$TMP/headers" | while IFS= read -r line; do
-    if [[ ${line,,} == content-type:* ]]; then line=${line#*:}; line=${line# }; printf '%s' "${line%%;*}"; fi
-  done)
+  if [[ $expected == 201 ]]; then after=$(date +%s%3N); fi
   body=$(cat "$TMP/body"; printf '.'); body=${body%.}
-  if [[ $unspecified != true && $path != /health ]]; then
-    [[ $body == "$(jq -c . "$TMP/body")" ]] || { echo "Response is not compact JSON: $label" >&2; exit 1; }
-  fi
-  if [[ $status != "$expected" ]]; then echo "$variant $label: expected $expected, got $status: $body" >&2; exit 1; fi
+  [[ $status == "$expected" ]] || { echo "$variant $label: expected $expected, got $status: $body" >&2; exit 1; }
+  type=$(tr -d '\r' < "$TMP/headers" | while IFS= read -r line; do if [[ ${line,,} == content-type:* ]]; then line=${line#*:}; line=${line# }; printf '%s' "${line%%;*}"; fi; done)
   if [[ $unspecified == true ]]; then type='<unspecified>'; body='<unspecified>'
-  elif [[ $path == /meta ]]; then
-    jq -e 'keys_unsorted == ["runtime","framework","sqlite"] and ([.runtime,.framework,.sqlite] | all(type == "string" and length > 0))' "$TMP/body" >/dev/null
-    body='{"runtime":"<runtime>","framework":"<framework>","sqlite":"<sqlite>"}'
-  elif [[ $status == 201 ]]; then
-    jq -e 'keys_unsorted == ["id","userId","title","body","createdAt"] and (.createdAt | type == "number" and . > 1700000000000)' "$TMP/body" >/dev/null
-    body=$(jq -c '.createdAt="<timestamp>"' "$TMP/body")
-  fi
-  if [[ $unspecified != true ]]; then
-    if [[ $path == /health ]]; then
-      [[ $type == text/plain && $body == ok ]] || { echo "Invalid health response: $type $body" >&2; exit 1; }
-    else
-      [[ $type == application/json ]] || { echo "Invalid JSON content type: $type" >&2; exit 1; }
-      case "$status" in
-        400) case "$label" in id-*) message='invalid id';; limit-*) message='invalid limit';; *) message='invalid body';; esac ;;
-        404) if [[ $method == POST ]]; then message='user not found'; else message='not found'; fi ;;
-        500) message='internal' ;;
-        *) message='' ;;
-      esac
-      if [[ -n $message && $body != "{\"error\":\"$message\"}" ]]; then echo "Wrong error body: $label $body" >&2; exit 1; fi
-    fi
+  elif [[ $path == /health ]]; then [[ $type == text/plain && $body == ok ]]
+  else
+    [[ $type == application/json && $body == "$(jq -c . "$TMP/body")" ]] || { echo "$variant $label: noncompact JSON or content type" >&2; exit 1; }
+    case "$status" in
+      401) [[ $body == '{"error":"unauthorized"}' ]] ;;
+      404) [[ $body == '{"error":"not found"}' ]] ;;
+      500) [[ $body == '{"error":"internal"}' ]] ;;
+      400) case "$label" in limit-*) message='invalid limit';; cursor-*) message='invalid cursor';; id-*) message='invalid id';; *) message='invalid body';; esac; [[ $body == "{\"error\":\"$message\"}" ]] ;;
+      201) jq -e --argjson before "$before" --argjson after "$after" 'keys_unsorted == ["id","postId","body","createdAt","author"] and .author == {id:1,name:"User 1"} and .createdAt >= $before and .createdAt <= $after' "$TMP/body" >/dev/null; body=$(jq -c 'del(.createdAt)' "$TMP/body") ;;
+    esac
+    if [[ $path == /meta ]]; then jq -e 'keys_unsorted == ["runtime","framework","sqlite"] and all(.[]; type=="string" and length>0)' "$TMP/body" >/dev/null; body='<variant metadata>'; fi
+    if [[ $label == post-after ]]; then body=$(jq -c 'del(.comments[0].createdAt)' "$TMP/body"); fi
   fi
   printf '%s|%s|%s|%s\n' "$label" "$status" "$type" "$body" >> "$TMP/$variant.responses"
 }
@@ -55,64 +55,74 @@ for variant in "${requested[@]}"; do if [[ $variant != go ]]; then variants+=("$
 for variant in "${variants[@]}"; do
   db="$TMP/$variant.db"; cp data/seed.db "$db"
   command_for "$variant"
-  NODE_ENV=production DB_PATH="$db" PORT="$PORT" WORKERS=2 GOMAXPROCS=2 "${CMD[@]}" > "$TMP/$variant.log" 2>&1 & pid=$!
+  NODE_ENV=production DB_PATH="$db" JWT_SECRET="$JWT_SECRET" PORT="$PORT" WORKERS=2 GOMAXPROCS="$VARIANT_GOMAXPROCS" "${CMD[@]}" > "$TMP/$variant.log" 2>&1 & pid=$!
   if ! wait_ready; then cat "$TMP/$variant.log" >&2; exit 1; fi
-  request health GET /health 200
-  request meta GET /meta 200
-  request user GET /users/1 200
-  [[ $(cat "$TMP/body") == '{"id":1,"name":"User 1","email":"user1@example.com","createdAt":1700000000000}' ]]
-  request missing GET /users/999999 404
-  posts_user=$(DB_PATH="$db" "$BUN" -e 'import {Database} from "bun:sqlite"; const db=new Database(process.env.DB_PATH,{readonly:true}); console.log(db.query("SELECT user_id FROM posts GROUP BY user_id HAVING count(*) > 20 ORDER BY user_id LIMIT 1").get().user_id); db.close();')
-  request posts GET "/users/$posts_user/posts" 200
-  jq -e --argjson user "$posts_user" 'length == 20 and all(.[]; .userId == $user and keys_unsorted == ["id","userId","title","body","createdAt"]) and ([.[].id] == ([.[].id] | sort | reverse))' "$TMP/body" >/dev/null
-  request posts-limit GET "/users/$posts_user/posts?limit=1" 200
-  jq -e 'length == 1' "$TMP/body" >/dev/null
-  request posts-limit-max GET "/users/$posts_user/posts?limit=100" 200
-  jq -e 'length > 20 and length <= 100' "$TMP/body" >/dev/null
-  request posts-missing GET /users/999999/posts 200
-  [[ $(cat "$TMP/body") == '[]' ]]
-  request max-id-user GET /users/9007199254740991 404
-  request max-id-posts GET /users/9007199254740991/posts 200
-  for id in 0 -1 abc 1.5 9007199254740992; do
-    request "id-user-$id" GET "/users/$id" 400
-    request "id-posts-$id" GET "/users/$id/posts" 400
+  sleep 1
+  request health GET /health 200 '' missing
+  request meta GET /meta 200 '' missing
+  case "$variant" in
+    go|go-4) jq -e '.runtime|startswith("go")' "$TMP/body" >/dev/null; [[ $(jq -r .framework "$TMP/body") == net/http ]] ;;
+    bun|bun-1) jq -e '.runtime|startswith("bun ")' "$TMP/body" >/dev/null; [[ $(jq -r .framework "$TMP/body") == bun ]] ;;
+    elysia) jq -e '(.runtime|startswith("bun ")) and (.framework|startswith("elysia "))' "$TMP/body" >/dev/null ;;
+    node) jq -e '(.runtime|startswith("node ")) and (.framework|startswith("express "))' "$TMP/body" >/dev/null ;;
+  esac
+  for auth in missing 'Basic abc' 'bearer abc' 'Bearer !!!.abc.def' "Bearer ${token%.*}.AA" 'Bearer a.b' 'Bearer a.b.c.d' "Bearer $token=" 'Bearer ..'; do request "auth-$auth" GET /feed 401 '' "$auth"; done
+  while read -r label bad; do request "auth-$label" GET /feed 401 '' "Bearer $bad"; done < "$TMP/bad-tokens"
+  request auth-post GET /posts/1 401 '' missing
+  request auth-comment POST /posts/1/comments 401 '{"body":"ok"}' 'Bearer bad'
+  status=$(curl -sS --max-time 15 -o "$TMP/body" -w '%{http_code}' -H 'Authorization: Bearer bad' -H 'Content-Type: application/json' --data-binary '{' "http://127.0.0.1:$PORT/posts/1/comments")
+  case "$status" in 401) [[ $(cat "$TMP/body") == '{"error":"unauthorized"}' ]] ;; 400) [[ $(cat "$TMP/body") == '{"error":"invalid body"}' ]] ;; *) echo "$variant bad-auth/body: unexpected $status" >&2; exit 1 ;; esac
+  cursor=''
+  for page in 1 2 3; do
+    path=/feed; if [[ -n $cursor ]]; then path="/feed?cursor=$cursor"; fi
+    request "feed-$page" GET "$path" 200
+    jq -e 'keys_unsorted == ["viewer","items","nextCursor"] and .viewer == {id:1,name:"User 1"} and (.items|length)==20 and all(.items[]; keys_unsorted == ["id","title","excerpt","wordCount","readingMinutes","tags","commentCount","createdAt","author"])' "$TMP/body" >/dev/null
+    jq -c '[.items[].id]' "$TMP/body" >> "$TMP/$variant.pages"
+    cursor=$(jq -r .nextCursor "$TMP/body")
   done
-  for limit in 0 101 x 1.5 -1 ''; do request "limit-$limit" GET "/users/1/posts?limit=$limit" 400; done
-  request unknown GET /unknown 404 '' true
-  request valid POST /posts 201 '{"userId":1,"title":"A valid title","body":"A valid body"}'
-  request malformed POST /posts 400 '{'
-  request missing-title POST /posts 400 '{"userId":1,"body":"body"}'
-  request missing-body POST /posts 400 '{"userId":1,"title":"title"}'
-  request missing-user POST /posts 400 '{"title":"title","body":"body"}'
-  request string-user POST /posts 400 '{"userId":"1","title":"title","body":"body"}'
-  request fractional-user POST /posts 400 '{"userId":1.5,"title":"title","body":"body"}'
-  request zero-user POST /posts 400 '{"userId":0,"title":"title","body":"body"}'
-  request negative-user POST /posts 400 '{"userId":-1,"title":"title","body":"body"}'
-  request unsafe-user POST /posts 400 '{"userId":9007199254740992,"title":"title","body":"body"}'
-  request empty-title POST /posts 400 '{"userId":1,"title":"","body":"body"}'
-  request wrong-title POST /posts 400 '{"userId":1,"title":1,"body":"body"}'
-  request wrong-body POST /posts 400 '{"userId":1,"title":"title","body":false}'
-  request empty-body POST /posts 400 '{"userId":1,"title":"title","body":""}'
-  request null POST /posts 400 'null'
-  request array POST /posts 400 '[]'
-  request long-title POST /posts 400 "$(jq -nc '{userId:1,title:("x"*201),body:"body"}')"
-  request long-body POST /posts 400 "$(jq -nc '{userId:1,title:"title",body:("x"*10001)}')"
-  request under-size-cap POST /posts 400 "$(jq -nc '{userId:1,title:"title",body:("x"*20000)}')"
-  request boundary POST /posts 201 "$(jq -nc '{userId:1,title:("x"*200),body:("x"*10000)}')"
-  request nonexistent-user POST /posts 404 '{"userId":999999,"title":"title","body":"body"}'
-  request max-user POST /posts 404 '{"userId":9007199254740991,"title":"title","body":"body"}'
-  request oversized POST /posts 413 "$(jq -nc '{userId:1,title:"title",body:("x"*71680)}')" true
+  [[ $(jq -s 'add | length == (unique|length)' "$TMP/$variant.pages") == true ]]
+  request feed-one GET '/feed?limit=1' 200
+  [[ $(jq '.items|length' "$TMP/body") == 1 ]]
+  request feed-max GET '/feed?limit=50' 200
+  [[ $(jq '.items|length' "$TMP/body") == 50 ]]
+  for limit in 0 51 -1 x 1.5 '' 9007199254740992 '%2B1' 1e1 0x1 '%201' '1%20'; do request "limit-$limit" GET "/feed?limit=$limit" 400; done
+  for cursor in '' '!!!' 'MQ==' 'MDox' 'MTow' 'LTE6MQ' 'MToxLjU' 'OTAwNzE5OTI1NDc0MDk5Mjox' 'MToxOjE' 'MToxMR' 'MToxMg==' 'KzE6MQ'; do request "cursor-$cursor" GET "/feed?cursor=$cursor" 400; done
+  request feed-end GET '/feed?cursor=MTox' 200
+  [[ $(cat "$TMP/body") == '{"viewer":{"id":1,"name":"User 1"},"items":[],"nextCursor":null}' ]]
+  request post GET /posts/1 200
+  jq -e 'keys_unsorted == ["post","comments"] and (.post|keys_unsorted)==["id","title","body","wordCount","readingMinutes","tags","commentCount","createdAt","author"] and .post.id==1 and all(.comments[]; keys_unsorted==["id","body","createdAt","author"])' "$TMP/body" >/dev/null
+  count=$(jq .post.commentCount "$TMP/body")
+  for id in 0 -1 abc 1.5 9007199254740992 +1 1e1 0x1 '%201' '1%20'; do request "id-get-$id" GET "/posts/$id" 400; request "id-create-$id" POST "/posts/$id/comments" 400 '{"body":"ok"}'; done
+  request post-missing GET /posts/100001 404
+  request post-max GET /posts/9007199254740991 404
+  request comment-missing POST /posts/100001/comments 404 '{"body":"ok"}'
+  request comment-max POST /posts/9007199254740991/comments 404 '{"body":"ok"}'
+  request unknown GET /unknown 404 '' "Bearer $token" true
+  request missing-id GET /posts/ 404 '' "Bearer $token" true
+  status=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $token" "http://127.0.0.1:$PORT/feed"); [[ $status == 404 || $status == 405 ]]
+  request create POST /posts/1/comments 201 '{"body":"A valid comment","extra":true}'
+  comment_id=$(jq .id "$TMP/body")
+  [[ $(jq -c 'del(.id,.createdAt)' "$TMP/body") == '{"postId":1,"body":"A valid comment","author":{"id":1,"name":"User 1"}}' ]]
+  request post-after GET /posts/1 200
+  jq -e --argjson count "$count" --argjson id "$comment_id" '.post.commentCount==$count+1 and .comments[0].id==$id and .comments[0].body=="A valid comment" and .comments[0].author=={id:1,name:"User 1"}' "$TMP/body" >/dev/null
+  for payload in '{' null '[]' '{}' '{"body":false}' '{"body":null}' '{"body":1}' '{"body":""}'; do request "body-$payload" POST /posts/1/comments 400 "$payload"; done
+  request body-long POST /posts/1/comments 400 "$(jq -nc '{body:("x"*2001)}')"
+  request body-min POST /posts/2/comments 201 '{"body":"x"}'
+  request body-max POST /posts/2/comments 201 "$(jq -nc '{body:("x"*2000)}')"
+  request oversized POST /posts/1/comments 413 "$(jq -nc '{body:("x"*71680)}')" "Bearer $token" true
   DB_PATH="$db" LOCK_READY="$TMP/locked" "$BUN" -e 'import {Database} from "bun:sqlite"; const db=new Database(process.env.DB_PATH); db.exec("BEGIN IMMEDIATE"); await Bun.write(process.env.LOCK_READY,"ready"); await Bun.sleep(30000); db.exec("ROLLBACK"); db.close();' & lock_pid=$!
-  for ((attempt=0; attempt<100; attempt++)); do
-    if [[ -f $TMP/locked ]]; then break; fi
-    sleep 0.05
+  for ((attempt=0; attempt<100; attempt++)); do [[ -f $TMP/locked ]] && break; sleep 0.05; done
+  [[ -f $TMP/locked ]]
+  request busy POST /posts/1/comments 500 '{"body":"ok"}'
+  kill "$lock_pid"; wait "$lock_pid" 2>/dev/null || true; lock_pid=''; rm "$TMP/locked"
+  DB_PATH="$db" "$BUN" -e 'import {Database} from "bun:sqlite"; const db=new Database(process.env.DB_PATH); db.exec("CREATE TRIGGER fail_comment BEFORE INSERT ON comments BEGIN SELECT RAISE(ABORT, '\''forced internal error'\''); END"); db.close();'
+  request internal POST /posts/1/comments 500 '{"body":"ok"}'
+  kill "$pid"; wait "$pid" 2>/dev/null || true; pid=''
+  deadline=$((SECONDS + 5))
+  while curl --silent --max-time 0.5 "http://127.0.0.1:$PORT/health" >/dev/null; do
+    if ((SECONDS >= deadline)); then echo "$variant left workers listening after shutdown" >&2; exit 1; fi
+    sleep 0.1
   done
-  [[ -f $TMP/locked ]] || { echo 'Writer lock helper failed' >&2; exit 1; }
-  request busy POST /posts 500 '{"userId":1,"title":"title","body":"body"}'
-  kill "$lock_pid"; wait "$lock_pid" 2>/dev/null || true; lock_pid=""; rm "$TMP/locked"
-  DB_PATH="$db" "$BUN" -e 'import {Database} from "bun:sqlite"; const db=new Database(process.env.DB_PATH); db.exec("CREATE TRIGGER fail_insert BEFORE INSERT ON posts BEGIN SELECT RAISE(ABORT, '\''forced internal error'\''); END"); db.close();'
-  request internal POST /posts 500 '{"userId":1,"title":"title","body":"body"}'
-  kill "$pid"; wait "$pid" 2>/dev/null || true; pid=""
   if [[ $variant != go ]]; then diff -u "$TMP/go.responses" "$TMP/$variant.responses"; fi
   printf '%s: conformance passed\n' "$variant"
 done

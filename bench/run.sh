@@ -2,7 +2,6 @@
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
 cd "$ROOT"
-SCENARIOS=${SCENARIOS:-"health user posts write mixed"}
 REPS=${REPS:-3}
 DURATION=${DURATION:-20}
 WARMUP=${WARMUP:-5}
@@ -29,7 +28,7 @@ mkdir -p "$RESULTS/runs"
 unit=""
 DB="$DB_DIR/gbb-$$/db.sqlite"
 mkdir -p "${DB%/*}"
-cleanup() { if [[ -n $unit ]]; then systemctl --user stop "$unit"; fi; rm -rf "${DB%/*}"; }
+cleanup() { if [[ -n $unit ]]; then systemctl --user stop "$unit" 2>/dev/null || true; fi; rm -rf "${DB%/*}"; }
 trap cleanup EXIT
 controllers=$(cat "/sys/fs/cgroup/user.slice/user-$UID.slice/user@$UID.service/cgroup.controllers")
 if [[ " $controllers " != *" cpuset "* ]]; then echo "User manager has no delegated cpuset controller" >&2; exit 1; fi
@@ -42,12 +41,15 @@ sequence=0
 start() {
   local variant=$1 db=$2
   command_for "$variant"
+  tuning_for "$variant"
+  local -a tuning_args=()
+  for setting in "${TUNING[@]}"; do tuning_args+=(-E "$setting"); done
   sequence=$((sequence + 1))
   unit="gbb-$variant-$$-$sequence"
   systemd-run --user --unit="$unit" --collect --quiet \
     -p "AllowedCPUs=$SERVER_CPUS" -p "MemoryMax=$SERVER_MEM" -p MemorySwapMax=0 \
     -p "WorkingDirectory=$ROOT" -E "NODE_ENV=production" -E "DB_PATH=$db" \
-    -E "PORT=$PORT" -E "WORKERS=$N" -E "GOMAXPROCS=$N" "${CMD[@]}"
+    -E "PORT=$PORT" -E "JWT_SECRET=$JWT_SECRET" -E "WORKERS=$N" -E "GOMAXPROCS=$VARIANT_GOMAXPROCS" "${tuning_args[@]}" "${CMD[@]}"
   if ! wait_ready; then journalctl --user -u "$unit" -n 60 --no-pager >&2; exit 1; fi
   # The first worker answering /health doesn't mean every cluster worker is listening yet.
   sleep 1
@@ -62,6 +64,8 @@ cpu_model=$(LC_ALL=C lscpu -J | jq -r '.lscpu[] | select(.field == "Model name:"
 governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
 wrk_version=$("$WRK" --version 2>&1 || true)
 wrk_version=${wrk_version%%$'\n'*}
+pgo_hash=""
+if [[ -f servers/go/default.pgo ]]; then read -r pgo_hash _ < <(sha256sum servers/go/default.pgo); fi
 jq -n --arg cpu "$cpu_model" --arg kernel "$(uname -r)" --arg governor "$governor" \
   --arg go "$(mise exec -- go version)" --arg bun "$("$BUN" --version)" \
   --arg elysia "$(jq -r .version servers/bun/node_modules/elysia/package.json)" \
@@ -72,7 +76,9 @@ jq -n --arg cpu "$cpu_model" --arg kernel "$(uname -r)" --arg governor "$governo
   --arg server_cpus "$SERVER_CPUS" --arg load_cpus "$LOAD_CPUS" --arg memory "$SERVER_MEM" \
   --argjson reps "$REPS" --argjson duration "$DURATION" --argjson warmup "$WARMUP" \
   --argjson conns "$CONNS" --argjson workers "$N" --argjson port "$PORT" \
-  '{cpu:$cpu,kernel:$kernel,governor:$governor,go:$go,bun:$bun,elysia:$elysia,node:$node,express:$express,better_sqlite3:$better_sqlite3,wrk:$wrk,settings:{variants:$variants,scenarios:$scenarios,reps:$reps,duration_s:$duration,warmup_s:$warmup,connections:$conns,server_cpus:$server_cpus,load_cpus:$load_cpus,memory:$memory,workers:$workers,port:$port},meta:{}}' > "$RESULTS/env.json"
+  --arg gogc "$GO_GOGC" --arg gomemlimit "$GO_GOMEMLIMIT" --arg node_options "$NODE_TUNING" \
+  --arg go_build "$(mise exec -- go version -m bin/go-server)" --arg pgo_sha256 "$pgo_hash" \
+  '{cpu:$cpu,kernel:$kernel,governor:$governor,go:$go,go_build:$go_build,pgo_sha256:$pgo_sha256,bun:$bun,elysia:$elysia,node:$node,express:$express,better_sqlite3:$better_sqlite3,wrk:$wrk,settings:{variants:$variants,scenarios:$scenarios,reps:$reps,duration_s:$duration,warmup_s:$warmup,connections:$conns,server_cpus:$server_cpus,load_cpus:$load_cpus,memory:$memory,workers:$workers,port:$port,gomaxprocs:{go:$workers,"go-4":4},tuning:{go:{GOGC:$gogc,GOMEMLIMIT:$gomemlimit},"go-4":{GOGC:$gogc,GOMEMLIMIT:$gomemlimit},node:{NODE_OPTIONS:$node_options},bun:{}}},meta:{}}' > "$RESULTS/env.json"
 for variant in "${variants[@]}"; do
   dir="$RESULTS/runs/meta-$variant"; mkdir -p "$dir"; cp data/seed.db "$DB"
   start "$variant" "$DB"

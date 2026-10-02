@@ -1,7 +1,7 @@
 local thread_id = 0
 local scenario = os.getenv("SCENARIO") or "health"
-local title = string.rep("test ", 8)
-local body = string.rep("benchmark ", 50)
+local tokens = {}
+local payload = '{"body":"' .. string.rep("benchmark ", 15) .. '"}'
 
 function setup(thread)
   thread_id = thread_id + 1
@@ -10,27 +10,30 @@ end
 
 function init(args)
   math.randomseed(seed)
-  if scenario ~= "health" and scenario ~= "user" and scenario ~= "posts" and scenario ~= "write" and scenario ~= "mixed" then
+  if scenario ~= "health" and scenario ~= "feed" and scenario ~= "post" and scenario ~= "mixed" then
     error("unknown SCENARIO: " .. scenario)
   end
+  for token in assert(io.open("data/tokens.txt", "r")):lines() do tokens[#tokens + 1] = token end
+  assert(#tokens == 10000, "expected 10000 user tokens")
 end
 
 function request()
-  local selected, user = scenario, math.random(10000)
+  local selected = scenario
   if selected == "mixed" then
-    -- Reads and writes hit disjoint users so a faster writer doesn't change the size of its own posts reads.
     local roll = math.random(100)
-    if roll <= 60 then selected, user = "user", math.random(5000)
-    elseif roll <= 80 then selected, user = "posts", math.random(5000)
-    else selected, user = "write", 5000 + math.random(5000) end
+    if roll <= 70 then selected = "feed"
+    elseif roll <= 90 then selected = "post"
+    else selected = "comment" end
   end
-  if selected == "user" then return wrk.format("GET", "/users/" .. user) end
-  if selected == "posts" then return wrk.format("GET", "/users/" .. user .. "/posts") end
-  local payload = string.format('{"userId":%d,"title":"%s","body":"%s"}', user, title, body)
-  return wrk.format("POST", "/posts", { ["Content-Type"] = "application/json" }, payload)
+  local headers = { ["Authorization"] = "Bearer " .. tokens[math.random(#tokens)] }
+  if selected == "feed" then return wrk.format("GET", "/feed", headers) end
+  local path = "/posts/" .. math.random(100000)
+  if selected == "post" then return wrk.format("GET", path, headers) end
+  headers["Content-Type"] = "application/json"
+  return wrk.format("POST", path .. "/comments", headers, payload)
 end
 
--- wrk only sends its prebuilt static request (with the Host header) when no request() exists.
+-- wrk's static request avoids Lua work in the health baseline.
 if scenario == "health" then
   wrk.path = "/health"
   request = nil

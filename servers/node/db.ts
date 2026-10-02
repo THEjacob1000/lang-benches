@@ -1,64 +1,44 @@
 import Database from "better-sqlite3";
-import { existsSync } from "node:fs";
+import type { CommentRow, Cursor, PostRow, Viewer } from "./domain.ts";
 
 const path = process.env.DB_PATH;
-if (!path || !existsSync(path)) throw new Error("DB_PATH must name an existing database");
+if (!path) throw new Error("DB_PATH must name an existing database");
 export const db = new Database(path, { fileMustExist: true });
 db.exec(`
+  PRAGMA busy_timeout = 5000;
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
-  PRAGMA busy_timeout = 5000;
   PRAGMA foreign_keys = ON;
   PRAGMA cache_size = -16000;
   PRAGMA temp_store = MEMORY;
 `);
 
-type User = { id: number; name: string; email: string; createdAt: number };
-export type PostBody = { userId: number; title: string; body: string };
-type Post = { id: number; userId: number; title: string; body: string; createdAt: number };
-const user = db.prepare<[number], User>("SELECT id, name, email, created_at AS createdAt FROM users WHERE id = ?");
-const posts = db.prepare<[number, number], Post>("SELECT id, user_id AS userId, title, body, created_at AS createdAt FROM posts WHERE user_id = ? ORDER BY id DESC LIMIT ?");
-const insert = db.prepare<[number, string, string, number], { id: number }>("INSERT INTO posts (user_id, title, body, created_at) VALUES (?, ?, ?, ?) RETURNING id");
+const feed = db.prepare<[number, number, number, number], PostRow>("SELECT p.id, p.title, p.body, p.comment_count AS commentCount, p.created_at AS createdAt, u.id AS authorId, u.name AS authorName FROM feed_items f JOIN posts p ON p.id = f.post_id JOIN users u ON u.id = p.user_id WHERE f.user_id = ? AND (f.created_at, f.post_id) < (?, ?) ORDER BY f.created_at DESC, f.post_id DESC LIMIT ?");
+const post = db.prepare<[number], PostRow>("SELECT p.id, p.title, p.body, p.comment_count AS commentCount, p.created_at AS createdAt, u.id AS authorId, u.name AS authorName FROM posts p JOIN users u ON u.id = p.user_id WHERE p.id = ?");
+const comments = db.prepare<[number], CommentRow>("SELECT c.id, c.body, c.created_at AS createdAt, u.id AS authorId, u.name AS authorName FROM comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = ? ORDER BY c.id DESC LIMIT 20");
+const increment = db.prepare<[number]>("UPDATE posts SET comment_count = comment_count + 1 WHERE id = ?");
+const insert = db.prepare<[number, number, string, number], { id: number }>("INSERT INTO comments (post_id, user_id, body, created_at) VALUES (?, ?, ?, ?) RETURNING id");
 export const sqliteVersion = db.prepare<[], { version: string }>("SELECT sqlite_version() AS version").get()!.version;
 
-export function getUser(id: number): User | undefined {
-  return user.get(id);
+export class PostNotFoundError extends Error {}
+
+export function getFeed(viewerId: number, cursor: Cursor, limit: number): PostRow[] {
+  return feed.all(viewerId, cursor.createdAt, cursor.postId, limit);
 }
 
-export function listPosts(userId: number, limit: number): Post[] {
-  return posts.all(userId, limit);
+export function getPost(id: number) {
+  const row = post.get(id);
+  return row ? { post: row, comments: comments.all(id) } : null;
 }
 
-export function insertPost(userId: number, title: string, body: string): Post {
+const writeComment = db.transaction((postId: number, body: string, viewer: Viewer) => {
+  if (increment.run(postId).changes === 0) throw new PostNotFoundError();
   const createdAt = Date.now();
-  // .get() resets before SQLITE_DONE, so the commit skips SQLite's WAL autocheckpoint and the WAL grows unbounded.
-  const [{ id }] = insert.all(userId, title, body, createdAt);
-  return { id, userId, title, body, createdAt };
-}
+  // Read through SQLITE_DONE so SQLite can run WAL autocheckpoint.
+  const [{ id }] = insert.all(postId, viewer.id, body, createdAt);
+  return { id, postId, body, createdAt, author: { id: viewer.id, name: viewer.name } };
+});
 
-export function parseId(value: string): number | null {
-  if (!/^[0-9]+$/.test(value)) return null;
-  const id = Number(value);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
-export function parseLimit(value: string | null): number | null {
-  if (value === null) return 20;
-  if (!/^[0-9]+$/.test(value)) return null;
-  const limit = Number(value);
-  return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : null;
-}
-
-export function parsePostBody(value: unknown): PostBody | null {
-  if (typeof value !== "object" || value === null) return null;
-  if (!("userId" in value && "title" in value && "body" in value)) return null;
-  const { userId, title, body } = value;
-  if (typeof userId !== "number" || !Number.isSafeInteger(userId) || userId <= 0) return null;
-  if (typeof title !== "string" || title.length < 1 || title.length > 200) return null;
-  if (typeof body !== "string" || body.length < 1 || body.length > 10000) return null;
-  return { userId, title, body };
-}
-
-export function isForeignKeyError(error: unknown): boolean {
-  return error instanceof Database.SqliteError && error.code === "SQLITE_CONSTRAINT_FOREIGNKEY";
+export function createComment(postId: number, body: string, viewer: Viewer) {
+  return writeComment.immediate(postId, body, viewer);
 }

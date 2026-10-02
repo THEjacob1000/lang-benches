@@ -3,7 +3,20 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 BUN=$(mise which bun)
 NODE=$(mise which node)
 PORT=${PORT:-3100}
-VARIANTS=${VARIANTS:-"go bun elysia node bun-1"}
+VARIANTS=${VARIANTS:-"go go-4 bun elysia node bun-1"}
+SCENARIOS=${SCENARIOS:-"health feed post mixed"}
+JWT_SECRET=${JWT_SECRET:-gbb-dev-secret-change-me}
+GO_GOGC=${GO_GOGC:-off}
+GO_GOMEMLIMIT=${GO_GOMEMLIMIT:-1536MiB}
+NODE_TUNING=${NODE_TUNING:---max-semi-space-size=64}
+
+tuning_for() {
+  TUNING=()
+  case "$1" in
+    go|go-4) TUNING=("GOGC=$GO_GOGC" "GOMEMLIMIT=$GO_GOMEMLIMIT") ;;
+    node) TUNING=("NODE_OPTIONS=$NODE_TUNING") ;;
+  esac
+}
 
 cpu_count() {
   local part first last total=0
@@ -17,8 +30,10 @@ cpu_count() {
 }
 
 command_for() {
+  VARIANT_GOMAXPROCS=${N:-2}
   case "$1" in
     go) CMD=("$ROOT/bin/go-server") ;;
+    go-4) CMD=("$ROOT/bin/go-server"); VARIANT_GOMAXPROCS=4 ;;
     bun) CMD=("$BUN" "$ROOT/servers/bun/cluster.ts" "$ROOT/servers/bun/raw.ts") ;;
     elysia) CMD=("$BUN" "$ROOT/servers/bun/cluster.ts" "$ROOT/servers/bun/elysia.ts") ;;
     node) CMD=("$NODE" "$ROOT/servers/node/cluster.ts") ;;
